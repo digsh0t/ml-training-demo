@@ -1,0 +1,43 @@
+name: TrainForge ML Training
+
+on:
+  workflow_dispatch:
+    inputs:
+      template:
+        description: 'Instance template'
+        required: true
+        default: 'cpu-small'
+        type: choice
+        options: [cpu-small, cpu-large, gpu-t4, gpu-a10]
+      training_script:
+        description: 'Training script'
+        required: true
+        default: 'train.py'
+      requirements_file:
+        description: 'Requirements file'
+        default: 'requirements.txt'
+      max_runtime_hours:
+        description: 'Max runtime (hours)'
+        default: '2'
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Provision & Train
+        run: |
+          echo "Template: ${{ inputs.template }}"
+          echo "Script: ${{ inputs.training_script }}"
+          # Terraform provision, SSH train, cleanup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: training-outputs
+          path: outputs/
