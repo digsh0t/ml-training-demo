@@ -28,16 +28,120 @@ env:
 jobs:
   train:
     runs-on: ubuntu-latest
+    outputs:
+      instance_ip: ${{ steps.provision.outputs.instance_ip }}
+      bucket_name: ${{ steps.provision.outputs.bucket_name }}
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-      - name: Provision & Train
-        run: |
-          echo "Template: ${{ inputs.template }}"
-          echo "Script: ${{ inputs.training_script }}"
-          # Terraform provision, SSH train, cleanup
-      - uses: actions/upload-artifact@v4
         with:
-          name: training-outputs
+          terraform_wrapper: false
+      
+      - name: Configure instance type
+        id: config
+        run: |
+          case "${{ inputs.template }}" in
+            cpu-small)  echo "instance_type=t3.medium" >> $GITHUB_OUTPUT ;;
+            cpu-large)  echo "instance_type=t3.xlarge" >> $GITHUB_OUTPUT ;;
+            gpu-t4)     echo "instance_type=g4dn.xlarge" >> $GITHUB_OUTPUT ;;
+            gpu-a10)    echo "instance_type=g5.xlarge" >> $GITHUB_OUTPUT ;;
+            *)          echo "instance_type=t3.medium" >> $GITHUB_OUTPUT ;;
+          esac
+      
+      - name: Create Terraform config
+        run: |
+          mkdir -p train-infra
+          cat > train-infra/main.tf << 'TFEOF'
+          terraform {
+            required_providers {
+              aws = { source = "hashicorp/aws", version = "~> 5.0" }
+            }
+          }
+          
+          provider "aws" {
+            region = var.aws_region
+          }
+          
+          variable "aws_region" {}
+          variable "instance_type" {}
+          variable "repo_url" {}
+          variable "training_script" {}
+          variable "requirements_file" {}
+          variable "run_id" {}
+          
+          module "training" {
+            source = "github.com/digsh0t/terraform-aws-trainforge?ref=main"
+            
+            project_name      = "trainforge"
+            environment       = "prod"
+            instance_type     = var.instance_type
+            repo_url          = var.repo_url
+            training_script   = var.training_script
+            requirements_file = var.requirements_file
+            run_id            = var.run_id
+          }
+          
+          output "instance_ip" { value = module.training.instance_public_ip }
+          output "bucket_name" { value = module.training.bucket_name }
+          output "artifacts_path" { value = module.training.artifacts_path }
+          TFEOF
+      
+      - name: Provision infrastructure
+        id: provision
+        working-directory: train-infra
+        run: |
+          terraform init
+          terraform apply -auto-approve \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="instance_type=${{ steps.config.outputs.instance_type }}" \
+            -var="repo_url=https://github.com/${{ github.repository }}.git" \
+            -var="training_script=${{ inputs.training_script }}" \
+            -var="requirements_file=${{ inputs.requirements_file }}" \
+            -var="run_id=${{ github.run_id }}"
+          
+          echo "instance_ip=$(terraform output -raw instance_ip)" >> $GITHUB_OUTPUT
+          echo "bucket_name=$(terraform output -raw bucket_name)" >> $GITHUB_OUTPUT
+      
+      - name: Wait for training completion
+        run: |
+          echo "Waiting for training to complete..."
+          BUCKET="${{ steps.provision.outputs.bucket_name }}"
+          RUN_ID="${{ github.run_id }}"
+          TIMEOUT=$(( ${{ inputs.max_runtime_hours }} * 3600 ))
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            if aws s3 cp s3://$BUCKET/$RUN_ID/status /tmp/status 2>/dev/null; then
+              echo "Training completed!"
+              break
+            fi
+            echo "Training in progress... (${ELAPSED}s elapsed)"
+            sleep 30
+            ELAPSED=$((ELAPSED + 30))
+          done
+      
+      - name: Download results
+        run: |
+          mkdir -p outputs
+          aws s3 cp s3://${{ steps.provision.outputs.bucket_name }}/${{ github.run_id }}/ outputs/ --recursive || true
+          ls -la outputs/
+      
+      - name: Cleanup infrastructure
+        if: always()
+        working-directory: train-infra
+        run: |
+          terraform destroy -auto-approve \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="instance_type=${{ steps.config.outputs.instance_type }}" \
+            -var="repo_url=https://github.com/${{ github.repository }}.git" \
+            -var="training_script=${{ inputs.training_script }}" \
+            -var="requirements_file=${{ inputs.requirements_file }}" \
+            -var="run_id=${{ github.run_id }}"
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-outputs-${{ github.run_id }}
           path: outputs/
