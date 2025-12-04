@@ -9,16 +9,19 @@ on:
         default: 'cpu-small'
         type: choice
         options: [cpu-small, cpu-large, gpu-t4, gpu-a10]
-      training_script:
-        description: 'Training script'
+      run_command:
+        description: 'Command to run training'
         required: true
-        default: 'train.py'
+        default: 'python train.py'
       requirements_file:
         description: 'Requirements file'
         default: 'requirements.txt'
       max_runtime_hours:
         description: 'Max runtime (hours)'
         default: '2'
+      artifacts_path:
+        description: 'Paths to save as artifacts (comma-separated)'
+        default: 'results/'
 
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -67,7 +70,7 @@ jobs:
           variable "aws_region" {}
           variable "instance_type" {}
           variable "repo_url" {}
-          variable "training_script" {}
+          variable "run_command" {}
           variable "requirements_file" {}
           variable "run_id" {}
           
@@ -78,7 +81,7 @@ jobs:
             environment       = "prod"
             instance_type     = var.instance_type
             repo_url          = var.repo_url
-            training_script   = var.training_script
+            run_command       = var.run_command
             requirements_file = var.requirements_file
             run_id            = var.run_id
           }
@@ -97,7 +100,7 @@ jobs:
             -var="aws_region=${{ env.AWS_REGION }}" \
             -var="instance_type=${{ steps.config.outputs.instance_type }}" \
             -var="repo_url=https://github.com/${{ github.repository }}.git" \
-            -var="training_script=${{ inputs.training_script }}" \
+            -var="run_command=${{ inputs.run_command }}" \
             -var="requirements_file=${{ inputs.requirements_file }}" \
             -var="run_id=${{ github.run_id }}"
           
@@ -136,7 +139,7 @@ jobs:
             -var="aws_region=${{ env.AWS_REGION }}" \
             -var="instance_type=${{ steps.config.outputs.instance_type }}" \
             -var="repo_url=https://github.com/${{ github.repository }}.git" \
-            -var="training_script=${{ inputs.training_script }}" \
+            -var="run_command=${{ inputs.run_command }}" \
             -var="requirements_file=${{ inputs.requirements_file }}" \
             -var="run_id=${{ github.run_id }}"
       
@@ -144,4 +147,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: training-outputs-${{ github.run_id }}
-          path: outputs/
+          path: |
+            outputs/
+            ${{ inputs.artifacts_path }}
